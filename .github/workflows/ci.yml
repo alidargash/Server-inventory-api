@@ -51,6 +51,8 @@ jobs:
   smoke:
     needs: test
     runs-on: ubuntu-latest
+    env:
+      APP_VERSION: ci-${{ github.run_number }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -77,4 +79,6 @@ jobs:
         run: |
           curl -s http://127.0.0.1:5000/readyz | grep '"servers_loaded":9'
 
-
+      - name: Check version endpoint
+        run: |
+          curl -s http://127.0.0.1:5000/version | grep "ci-${{ github.run_number }}"
