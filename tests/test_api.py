@@ -21,7 +21,7 @@ def test_healthz_returns_200(client):
 def test_readyz_reports_ready(client):
     resp = client.get("/readyz")
     assert resp.status_code == 200
-    assert resp.get_json()["servers_loaded"] == 9
+    assert resp.get_json()["servers_loaded"] == 10
 
 
 def test_version_endpoint(client):
