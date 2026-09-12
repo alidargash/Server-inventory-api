@@ -48,3 +48,33 @@ jobs:
       - name: Hello
         run: echo "CI workflow is running"
 
+  smoke:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Start application
+        run: |
+          python app.py &
+          sleep 5
+
+      - name: Check health endpoint
+        run: |
+          test "$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:5000/healthz)" = "200"
+
+      - name: Check readiness endpoint
+        run: |
+          curl -s http://127.0.0.1:5000/readyz | grep '"servers_loaded":9'
+
+
