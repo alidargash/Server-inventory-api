@@ -1,109 +1,85 @@
-"""
+"""server-inventory-api
 
-Run it in one of two ways:
+A small Flask API over a JSON server inventory.
+The endpoints are chosen so they map onto the CI/CD pipeline you will build:
 
-    uvicorn app:app --reload        (best while writing code)
-    python app.py                   (best inside Docker later)
-
-Then  http://localhost:8000/docs in the browser.
+  /healthz   liveness  - is the process up?
+  /readyz    readiness - is the inventory loaded and usable?
+  /version   which build is running (set by the pipeline)
+  /servers   the data itself
 """
 
 import os
 
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from flask import Flask, jsonify, request
+
+from inventory import (
+    InventoryError,
+    filter_servers,
+    find_server,
+    load_inventory,
+    summarize,
+    unhealthy,
+)
+
+APP_VERSION = os.getenv("APP_VERSION", "0.1.0")
+INVENTORY_PATH = os.getenv("INVENTORY_PATH", "servers.json")
+
+app = Flask(__name__)
+
+# Loaded once at startup. If it fails, the app still starts but /readyz
+# reports not-ready. That is what a readiness probe is for.
+try:
+    SERVERS = load_inventory(INVENTORY_PATH)
+    LOAD_ERROR = None
+except InventoryError as exc:
+    SERVERS = []
+    LOAD_ERROR = str(exc)
 
 
-# ---------------------------------------------------------------------
-# 1. Configuration - never hardcode, always read the environment
-# ---------------------------------------------------------------------
-HOST = os.environ.get("HOST", "0.0.0.0")
-PORT = int(os.environ.get("PORT", "8000"))
-APP_ENV = os.environ.get("APP_ENV", "local")
+@app.get("/healthz")
+def healthz():
+    """Liveness. Always 200 while the process is running."""
+    return jsonify(status="ok"), 200
 
 
-# ---------------------------------------------------------------------
-# 2. The application object + our "database" (just a dict in memory)
-# ---------------------------------------------------------------------
-app = FastAPI(title="Server Inventory API", version="1.0.0")
-
-servers = {
-    1: {"id": 1, "name": "web-01", "ip": "10.0.0.11", "env": "prod"},
-    2: {"id": 2, "name": "db-01", "ip": "10.0.0.21", "env": "prod"},
-}
+@app.get("/readyz")
+def readyz():
+    """Readiness. 200 only when the inventory loaded correctly."""
+    if LOAD_ERROR:
+        return jsonify(status="not ready", reason=LOAD_ERROR), 503
+    return jsonify(status="ready", servers_loaded=len(SERVERS)), 200
 
 
-# ---------------------------------------------------------------------
-# 3. The shape of the data we accept when someone sends a POST
-# ---------------------------------------------------------------------
-class NewServer(BaseModel):
-    name: str
-    ip: str
-    env: str = "dev"
-
-
-# ---------------------------------------------------------------------
-# 4. The endpoints
-# ---------------------------------------------------------------------
-
-@app.get("/health")
-def health():
-    """Is the app alive? Docker and Kubernetes will call this."""
-    return {"status": "ok", "env": APP_ENV}
+@app.get("/version")
+def version():
+    return jsonify(version=APP_VERSION), 200
 
 
 @app.get("/servers")
 def list_servers():
-    """Return every server we know about."""
-    print(f"GET /servers -> returning {len(servers)} servers")
-    return list(servers.values())
+    """List servers. Optional filters: ?env=prod&status=online"""
+    env = request.args.get("env")
+    status = request.args.get("status")
+    matches = filter_servers(SERVERS, env=env, status=status)
+    return jsonify(count=len(matches), servers=matches), 200
 
 
-@app.get("/servers/{server_id}")
-def get_server(server_id: int):
-    """Return one server by its id."""
-    if server_id not in servers:
-        raise HTTPException(status_code=404, detail=f"server {server_id} not found")
-    return servers[server_id]
+@app.get("/servers/<name>")
+def get_server(name):
+    server = find_server(SERVERS, name)
+    if server is None:
+        return jsonify(error="server not found", name=name), 404
+    return jsonify(server), 200
 
 
-@app.post("/servers", status_code=201)
-def create_server(new_server: NewServer):
-    """Add a new server to the list."""
-    new_id = max(servers.keys(), default=0) + 1
-
-    server = {
-        "id": new_id,
-        "name": new_server.name,
-        "ip": new_server.ip,
-        "env": new_server.env,
-    }
-
-    servers[new_id] = server
-    print(f"POST /servers -> created server {new_id} ({new_server.name})")
-    return server
+@app.get("/stats")
+def stats():
+    data = summarize(SERVERS)
+    data["unhealthy"] = unhealthy(SERVERS)
+    return jsonify(data), 200
 
 
-@app.delete("/servers/{server_id}")
-def delete_server(server_id: int):
-    """Remove a server from the list."""
-    if server_id not in servers:
-        raise HTTPException(status_code=404, detail=f"server {server_id} not found")
-
-    deleted = servers.pop(server_id)
-    print(f"DELETE /servers/{server_id} -> removed {deleted['name']}")
-    return {"deleted": deleted}
-
-
-# ---------------------------------------------------------------------
-# 5. Start the server when we run: python app.py
-# ---------------------------------------------------------------------
 if __name__ == "__main__":
-    import uvicorn
-
-    print(f"Starting Server Inventory API on {HOST}:{PORT} (env={APP_ENV})")
-    uvicorn.run(app, host=HOST, port=PORT)
-
-
-
-
+    port = int(os.getenv("PORT", "5000"))
+    app.run(host="0.0.0.0", port=port)
